@@ -1,5 +1,3 @@
 # project_visualsearch
 
-A [workflowr][] project.
-
-[workflowr]: https://github.com/jdblischak/workflowr
+analysis of visual search data in preschoolers
