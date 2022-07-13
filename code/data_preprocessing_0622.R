@@ -21,10 +21,7 @@ fun_rename<-function(x,variable_position,new_name){
 # Load Packages ####
 require(zoo) #na.approx
 require(data.table) #fread uses parallelization and thus mucd faster than read.csv
-require(pracma) #savitzky golay filter - gaze smoothing -
 
-
-#require(doParallel)
 # Load Data ####
 datapath<-paste0(home_path,data_path) #preprocessed on LINUX machine
 
@@ -430,19 +427,17 @@ data_block4<-lapply(data_block4,fun_screen_dist)
   ## ----------------- GAZE PREPROCESSING  ---------------------- ####
 
 #variables for gaze preprocessing
-interpolate_cutoff<-33 #interpolate number of samples (33 sample == 100ms at 300Hz)
 screen_width<-510 #mm on a 23 inch screen wiht 16:9 aspect ratio (Tobii TX 300 screen)
 screen_height<-290 #mm on a 23 inch screen wiht 16:9 aspect ratio (Tobii TX 300 screen)
-screen_distance<-650 #mm from screen
 degrees_by_radian<-57.296 #fixed conversion facor
-samples_running_median<-7 #for post-hoc identification of saccades/fixation - 7 = 23.1ms
 velocity_cutoff<-1000 #visual degress per second
 acceleration_cutoff<-100000 #visual degress per second
-#cutoff_saccade_degrees<-30
-initial_velocity_cutoff<-500
+initial_velocity_cutoff<-200
+median_samples_trial<-1200
 
 #--> Savitksy Golay filter of length 15 ~ 50ms --> see for coefficients: http://www.statistics4u.info/fundstat_eng/cc_savgol_coeff.html
-filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
+#filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
+filter_sg21<-c(-171,-76,9,84,149,204,249,284,309,324,329,324,309,284,249,204,149,84,9,-76,-171)/3059
 
 #required functions for gaze preprocessing:
 
@@ -461,9 +456,7 @@ filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
         #dummy coding of variables (1=at least 23 consecutive repetitions, 0=less than 23 repetitions)
         repets <- ifelse(repets>=lower_threshold & repets<=upper_threshold, 1, 0)
         #exclude cases where other values than NA (999) are repeated >=23 times by changing dummy value to 0:
-        df <- data.frame(findna, repets)
-        df$repets[df$findna!=999 & df$repets==1] <- 0
-        repets<-df$repets
+        repets[findna!=999 & repets==1] <- 0
         #gives out where changes from 0 to 1 (no NA at least 23xNA) or 1 to 0 (23x NA to no NA) appear
         changes <- c(diff(repets),0)
         #define start (interval before blink/missing data)
@@ -514,7 +507,7 @@ filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
           mean_speed<-median(k,na.rm=T)
           sd_speed<-mean(k,na.rm=T)
 
-          cutoff_new<-mean_speed+(6*sd_speed)
+          cutoff_new<-mean_speed+(3*sd_speed)
           if(is.na(cutoff_new)){
             cutoff<-NA
             break}
@@ -525,9 +518,20 @@ filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
 
         }
 
+        # #testing
+        # return(cutoff)
+
         saccade_peak<-ifelse(x>cutoff,T,F)
         return(saccade_peak)
         #also return cutoffs in a list
+
+      }
+
+      #idnetififes most often values in a sequence
+      fun_most_values <- function(x) {
+        ux <- unique(x)
+        tab <- tabulate(match(x, ux))
+        return(ux[tab == max(tab)])
 
       }
 
@@ -536,44 +540,70 @@ filter_sg15<-c(-78,-13,42,87,122,147,162,167,162,147,122,87,42,-13,-78)/1105
   #--> inspired by Nyström et al. 2010 - denoising with Savitsky-Golay filter and adaptive velocity threshold filter
 fun_gaze_preprocess<-function(x){
 
-
-  x<-data_block1[[111]]
+  #testing
+  #x<-data_block1[[84]]
 
   #preprocess based on per trial level
   x$trial_new<-ifelse(is.na(x$trial_new),0,x$trial_new) #consider NA as trial=0
   split_by_trial<-split(x,as.factor(x$trial_new))
 
-
   #split_by_trial<-split(x,as.factor(x$index_trial))
-  timestamp<-lapply(split_by_trial,function(x){x<-x['ts']})
+  timestamp<-sapply(split_by_trial,function(x){x<-x['ts']})
+  screen_distance<-sapply(split_by_trial,function(x){x<-x['screen_dist']})
 
-# A. FILTERING + DENOISING
+  #1. blink correction --> as noise
+  gazepos_x<-sapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.x)})
+  gazepos_y<-sapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.y)})
 
-  #3. blink correction --> as noise
-  gazepos_x<-lapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.x)})
-  gazepos_y<-lapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.y)})
+  #2. convert relative gaze to degrees visual angle --> degrees from point of origin
+  gazepos_x<-mapply(function(x,y){x<-x*atan(screen_width/y)*degrees_by_radian},x=gazepos_x,y=screen_distance,SIMPLIFY = F)
+  gazepos_y<-mapply(function(x,y){x<-x*atan(screen_height/y)*degrees_by_radian},x=gazepos_y,y=screen_distance,SIMPLIFY = F)
 
-  summary(unlist(gazepos_y))
+  #3. drop trials with less than 50% of data
+  gazepos_x<-sapply(gazepos_x,function(x){if(sum(is.na(x))>0.5*median_samples_trial){x<-as.numeric(rep(NA,length(x)))}else{return(x)}})
+  gazepos_y<-sapply(gazepos_y,function(x){if(sum(is.na(x))>0.5*median_samples_trial){x<-as.numeric(rep(NA,length(x)))}else{return(x)}})
+
+  #put together
+  unsplitting_factor<-as.factor(x$trial_new)
+  unsplit_by_trials<-unsplit(split_by_trial,f=unsplitting_factor)
+  gazepos_x<-unsplit(gazepos_x,f=unsplitting_factor)
+  gazepos_y<-unsplit(gazepos_y,f=unsplitting_factor)
+
+  x<-data.frame(unsplit_by_trials,gazepos_x,gazepos_y)
+  x$trial_new[x$trial_new==0]<-NA
+  return(x)
+
+}
+
+
+fun_saccade_ident<-function(x){
+
+  #x<-fun_gaze_preprocess(data_block1[[100]])
+
+  #preprocess based on per trial level
+  x$trial_new<-ifelse(is.na(x$trial_new),0,x$trial_new) #consider NA as trial=0
+  split_by_trial<-split(x,as.factor(x$trial_new))
+  timestamp<-sapply(split_by_trial,function(x){x<-x['ts']})
+  gazepos_x<-sapply(split_by_trial,function(x){x<-x['gazepos_x']})
+  gazepos_y<-sapply(split_by_trial,function(x){x<-x['gazepos_y']})
 
 
 
-  #4. convert relative gaze to degrees visual angle --> degrees from point of origin
-  gazepos_x<-lapply(gazepos_x,function(x){x<-x*atan(screen_width/screen_distance)*degrees_by_radian}) #57,2958 = degrees by radian
-  gazepos_y<-lapply(gazepos_y,function(x){x<-x*atan(screen_height/screen_distance)*degrees_by_radian}) #57,2958 = degrees by radian
+# A. VELOCITY: FILTERING, DENOISING, PEAK IDENTIFICATION
 
-  #5. return velocity and acceleration variable --> in degrees per second
+  #3. return velocity and acceleration variable --> in degrees per second
   gaze_speed<-mapply(fun_return_speed,a=gazepos_x,b=gazepos_y,time=timestamp,SIMPLIFY = F)
   gaze_accel<-mapply(fun_return_accel,x=gaze_speed,time=timestamp,SIMPLIFY = F)
 
-  #6. remove biologically implausible acceleration and velocity values
-  gaze_speed<-lapply(gaze_speed,function(x){ifelse(abs(x)>velocity_cutoff,NA,x)})
-  gaze_accel<-lapply(gaze_accel,function(x){ifelse(abs(x)>acceleration_cutoff,NA,x)})
+  #4. remove biologically implausible acceleration and velocity values
+  gaze_speed<-sapply(gaze_speed,function(x){ifelse(abs(x)>velocity_cutoff,NA,x)})
+  gaze_accel<-sapply(gaze_accel,function(x){ifelse(abs(x)>acceleration_cutoff,NA,x)})
 
-  #7. Denoising by Savitzky-Golay filter (length 15)
+  #5. Denoising by Savitzky-Golay filter (length 21)
   gaze_speed<-lapply(gaze_speed,function(x){
-    ifelse(length(x)<length(filter_sg15),
+    ifelse(length(x)<length(filter_sg21),
            k<-x,
-           k<-as.numeric(filter(x,filter_sg15)))
+           k<-as.numeric(stats::filter(x,filter_sg21)))
     return(k)})
 
       #--> SOME FORM OF DENOISING HAS TO BE APPLIED
@@ -581,7 +611,7 @@ fun_gaze_preprocess<-function(x){
         #use a Savitzky Golay filter with length 15 ~ 50ms --> has been proven to be superior, see below
 
 
-              #filter/denoise benchmarking
+              #filter/denoise benchmarking #
               # sg7<-c(-2,3,6,7,6,3,-2)/21 #Savitsky Golay filter of length 7
               # sg5<-c(-3,12,17,12,-3)/35 #Savitsky Golay filter of length 5
               # sg21<-c(-171,-76,9,84,149,204,249,284,309,324,329,324,309,284,249,204,149,84,9,-76,-171)/3059
@@ -601,37 +631,52 @@ fun_gaze_preprocess<-function(x){
               # ###--> compare different denoise / filtering methods
               # ##--> Savitzky-Golay filter seems to be the winner - use a length of 21
 
+  #6.data-driven velocity threshold and identify peaks (saccades) based on it
+  velocity_peak<-lapply(gaze_speed,fun_velocity_threshold)
 
-#B. trial-wise velocity threshold
+   # # #  # #testing
+   # plot(gaze_speed[[10]],col=as.factor(unlist(velocity_peak[[10]])))
+   # plot(unlist(gaze_speed),col=as.factor(unlist(velocity_peak)))
 
-  #8.data-driven velocity threshold and identify peaks (saccades) based on it
-  saccade_peak<-lapply(gaze_speed,fun_velocity_threshold)
+#B.: DISPERSION
+
+  # fun_dispersion_filter<-function(a,b){
+  #
+  #   gaze_diff_x<-diff(a)
+  #   gaze_diff_y<-diff(b)
+  #   gaze_diff<-sqrt((gaze_diff_x^2)+(gaze_diff_y^2))
+  #   gaze_diff<-c(NA,gaze_diff)
+  # }
+  #
+  # gaze_diff<-mapply(fun_dispersion_filter,a=gazepos_x,b=gazepos_y,SIMPLIFY=F)
+
+#C.: DURATION
+
+  #modus in a window of ten samples
+  velocity_continues<-frollapply(velocity_peak,n=10,fun_most_values,align='center')
+  velocity_continues<-lapply(velocity_continues,as.logical)
+
+#D.: DEFINE SACCADE
+
+  saccade<-mapply(function(x,y){ifelse(x & y,T,F)},x=velocity_peak,y=velocity_continues,SIMPLIFY=F)
 
   #return trial-wise list to data.frame
-  unsplit_by_trials<-unsplit(split_by_trial,f=as.factor(x$trial_new))
-  gazepos_x<-unsplit(gazepos_x,f=as.factor(x$trial_new))
-  gazepos_y<-unsplit(gazepos_y,f=as.factor(x$trial_new))
-  gaze_speed<-unsplit(gaze_speed,f=as.factor(x$trial_new))
-  gaze_accel<-unsplit(gaze_accel,f=as.factor(x$trial_new))
-  saccade_peak<-unsplit(saccade_peak,f=as.factor(x$trial_new))
+  unsplitting_factor<-as.factor(x$trial_new)
+  unsplit_by_trials<-unsplit(split_by_trial,f=unsplitting_factor)
+  gaze_speed<-unsplit(gaze_speed,f=unsplitting_factor)
+  gaze_accel<-unsplit(gaze_accel,f=unsplitting_factor)
+  velocity_peak<-unsplit(velocity_peak,f=unsplitting_factor)
+  velocity_continues<-unsplit(velocity_continues,f=unsplitting_factor)
+  saccade<-unsplit(saccade,f=unsplitting_factor)
 
-  # #return trial-wise list to data.frame
-  # unsplit_by_trials<-unsplit(split_by_trial,f=as.factor(x$index_trial))
-  # gazepos_x<-unsplit(gazepos_x,f=as.factor(x$index_trial))
-  # gazepos_y<-unsplit(gazepos_y,f=as.factor(x$index_trial))
-  # gaze_speed<-unsplit(gaze_speed,f=as.factor(x$index_trial))
-  # gaze_accel<-unsplit(gaze_accel,f=as.factor(x$index_trial))
-  # saccade_peak<-unsplit(saccade_peak,f=as.factor(x$index_trial))
 
-  x<-data.frame(unsplit_by_trials,gazepos_x,gazepos_y,gaze_speed,gaze_accel,saccade_peak)
+  x<-data.frame(unsplit_by_trials,gaze_speed,gaze_accel,velocity_peak,velocity_continues,saccade)
   x$trial_new[x$trial_new==0]<-NA
   return(x)
 }
 
 
 #testing #####
-
-
 
  ###--> returns too many saccades - either smoothing of gazepos before or also consider distance
     ###--> check literature
@@ -769,7 +814,8 @@ data_block4<-lapply(data_block4, func_pd_preprocess)
   fun_select_data<-function(x){
     x<-x[,names(x) %in% c('eventlog','timestamp','ts','trial_phase','index_trial',
                           'ts_event','block_nr','trial','gazepos.x','gazepos.y',
-                          'pd','center_deviation','gazepos_x','gazepos_y','gaze_speed','gaze_accel','saccade_peak',
+                          'pd','center_deviation','gazepos_x','gazepos_y','gaze_speed','gaze_accel',
+                          'velocity_peak','velocity_continues','saccade',
                           'ts_event_new','trial_new')]
     return(x)
   }
@@ -804,7 +850,6 @@ data_block1<-lapply(data_block1,func_target_var)
 data_block2<-lapply(data_block2,func_target_var)
 data_block3<-lapply(data_block3,func_target_var)
 data_block4<-lapply(data_block4,func_target_var)
-
 
 
   ### - identify HITS ####
@@ -905,19 +950,17 @@ data_block4<-lapply(data_block4,func_target_var)
 
 
   #TODO:
-    #--> is gaze velocity and gaze acceleration correctly calculated --> maybe valocity describes a screen position?
+    #--> data to noisy to identify saccades per trial
 
-    #--> saccadic reaction time + time to hit
-        #requires a speed variable
+    #--> time to hit as time from stimulus onset to hit per trial
 
-    #--> rpd still has wrong reference window for ts_trial_new
-
-    #--> do pd preprocessing _ trialwise - why? --> rather do gaze preprocessing participant wise?
-        #pd preprocessing currently uses old ts variable
+    #--> identify fixation
 
     #--> create trialwise data frame
       #with time_to_hit data --> based on hits
       #pupillary response
+
+  ##--> develop analysis idea
 
 
   #--> DATA PLAUSIBILITY####
@@ -927,6 +970,7 @@ data_block4<-lapply(data_block4,func_target_var)
     #for testing: sleect subsample and do preprocessing
     subsample<-sample(1:length(data_block1), 30, replace=F)
     test<-lapply(data_block1[subsample],fun_gaze_preprocess)
+    test<-lapply(test,fun_saccade_ident)
     test<-lapply(test,func_pd_preprocess)
     test<-lapply(test,fun_select_data)
     test<-lapply(test,func_target_var)
@@ -953,19 +997,28 @@ data_block4<-lapply(data_block4,func_target_var)
                     ifelse(grepl('_t4',test$id) | grepl('_T4',test$id),'T4',
                            ifelse(grepl('_t6',test$id) | grepl('_T6',test$id),'T6','K')))
 
-
   test<-data.frame(test,timepoint)
 
   table(test$timepoint)
-
-
   table(test$hit)
   table(test$hit[test$trial_phase=='target'])[2]/sum(table(test$hit[test$trial_phase=='target']))
   #--> 15.6% hits during target presentation
 
+  require(ggplot2)
+
+
+  #hits over progression of a trial
+  ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,fill=hit))+geom_bar(position = "fill")+
+    labs(x='sample (1/300s)',y='proportion of all samples')
+
+  #saccade peak also shows no signal
+  ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,fill=saccade))+geom_bar(position = "fill")+
+    labs(x='sample (1/300s)',y='proportion of all samples')
+
+  table(test$saccade_peak)
+
   #descriptive hit differences
   with(test[test$trial_phase=='target',],by(hit,group,function(x){table(x)[2]/sum(table(x))}))
-  with(test[test$trial_phase=='target',],by(hit,block_nr,function(x){table(x)[2]/sum(table(x))}))
 
   #gaze behavior
   ggplot(test[test$trial_phase=='target',],aes(x=gazepos.x,y=gazepos.y))+
@@ -999,8 +1052,8 @@ data_block4<-lapply(data_block4,func_target_var)
     geom_smooth()+theme_bw()+labs(title='pupil size within trial',x='time (samples)',y='gaze velocity (degrees/s)')+
     geom_vline(xintercept=450)+geom_vline(xintercept=900)
 
-  #gaze acceleration --> does not make much sense
-  ggplot(test[test$ts_event_new<1100,],aes(x=ts_event_new,y=gaze_accel,group=as.factor(group),color=as.factor(group)))+
+ #gaze acceleration --> does not make much sense
+  ggplot(test[test$ts_event_new<1100 & test$trial_phase=='target',],aes(x=ts_event_new,y=gaze_accel,group=as.factor(group),color=as.factor(group)))+
     geom_smooth()+theme_bw()+labs(title='pupil size within trial',x='time (samples)',y='gaze acceleration')+
     geom_vline(xintercept=450)+geom_vline(xintercept=900)
 
@@ -1015,23 +1068,70 @@ data_block4<-lapply(data_block4,func_target_var)
               geom_smooth(method='lm', formula = y ~ x + poly(x,3))+theme_bw()+labs(title='pupil response within trial',x='time (samples)',y='pupil size (mm)')
 
 
+
   #pupil size progression
   g1<-ggplot(test[test$ts_event<1000,],aes(x=ts_event,y=pd))+
   geom_smooth()+theme_bw()+labs(title='pupil size within trial',x='time (samples)',y='pupil size (mm)')
 
-  ggplot(test[test$ts_event<1000,],aes(x=ts_event,y=gazepos.x,group=as.factor(target_position),color=as.factor(target_position)))+
-    geom_smooth(method='lm', formula = y ~ x + poly(x,5))+theme_bw()+labs(title='eye movement: x-axis',x='time (samples)',y='screen space (0-1)')
-
-  g3<-ggplot(test[test$ts_event<1000,],aes(x=ts_event,y=gazeposy,group=as.factor(target_position),color=as.factor(target_position)))+
-    geom_smooth(method='lm', formula = y ~ x + poly(x,5))+theme_bw()+labs(title='eye movement: y-axis',x='time (samples)',y='screen space (0-1)')
 
 
-  tiff(file=paste0(home_path,project_path,'/output/figure_pd_gaze_trials_120722.tiff'), # create a file in tiff format in current working directory
-       width=6, height=18, units="in", res=300, compression='lzw') #define size and resolution of the resulting figure
+  #gaze position
+      hist(test$gazepos_x)
+      hist(test$gazepos_y)
 
-  grid.arrange(g1,g2,g3,nrow=3)
+  ggplot(test[test$ts_event<1200 & !is.na(test$target_position),],aes(x=ts_event_new,y=gazepos_x,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth()+theme_bw()+ylim(10,30)+labs(title='eye movement: x-axis',x='time (samples)',y='screen space (0-1)')
+
+  ggplot(test[test$ts_event<1200 & !is.na(test$target_position),],aes(x=ts_event_new,y=gazepos_y,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth()+theme_bw()+ylim(10,30)+labs(title='eye movement: y-axis',x='time (samples)',y='screen space (0-1)')
+    ##--> most target hits are on top half
+
+
+
+#figure on preprocessed data
+
+  #gaze behavior
+  g1<-ggplot(test[test$trial_phase=='target',],aes(x=gazepos.x,y=gazepos.y))+
+    geom_hex(bins=30)+scale_fill_gradientn(colours=rev(rainbow(3)))+
+    ylim(1,0)+xlim(0,1)+coord_fixed(ratio = 9/16)+theme_bw()+labs(title='heatmap of gaze behavior',x='x-axis',y='y-axis')
+
+  #hits over progression of a trial
+  g2<-ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,fill=hit))+geom_bar(position = "fill")+
+    labs(title='tagret hit within trial progression',x='sample (1/300s)',y='proportion of all samples')+theme_bw()
+
+  #pupil size progression
+  g3<-ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,y=pd))+
+    geom_smooth()+theme_bw()+labs(title='pupil size within trial',x='time (1/300s)',y='pupil size (mm)')+
+    geom_vline(xintercept=450)+geom_vline(xintercept=900)
+
+  #gaze velocity
+  g4<-ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,y=gaze_speed))+
+    geom_smooth()+theme_bw()+labs(title='gaze velocity within trial',x='time (1/300s)',y='gaze velocity (degrees/s)')+
+    geom_vline(xintercept=450)+geom_vline(xintercept=900)
+
+  #gaze position
+  g5<-ggplot(test[test$ts_event<1200 & !is.na(test$target_position),],aes(x=ts_event_new,y=gazepos_x,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth()+theme_bw()+ylim(10,30)+labs(title='eye movement: x-axis',x='time (samples)',y='screen space (0-1)')
+
+  g6<-ggplot(test[test$ts_event<1200 & !is.na(test$target_position),],aes(x=ts_event_new,y=gazepos_y,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth()+theme_bw()+ylim(10,30)+labs(title='eye movement: y-axis',x='time (samples)',y='screen space (0-1)')
+
+
+  #create figure scene duration
+  tiff(file=paste0(home_path,project_path,"/output/figure_preprocessed_data.tiff"), # create a file in tiff format in current working directory
+       width=10, height=15, units="in", res=300, compression='lzw') #define size and resolution of the resulting figure
+
+  grid.arrange(g1,g2,g3,g4,g5,g6,ncol=2,top='preprocessed data in subsample')
 
   dev.off()
+
+
+
+
+
+
+
+
 
 
   #gaze velocity
