@@ -555,27 +555,34 @@ fun_gaze_preprocess<-function(x){
   gazepos_x<-sapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.x)})
   gazepos_y<-sapply(split_by_trial,function(x){fun_blink_cor(x$gazepos.y)})
 
-  #2. convert relative gaze to degrees visual angle --> degrees from point of origin
-  gazepos_x<-mapply(function(x,y){x<-x*atan(screen_width/y)*degrees_by_radian},x=gazepos_x,y=screen_distance,SIMPLIFY = F)
-  gazepos_y<-mapply(function(x,y){x<-x*atan(screen_height/y)*degrees_by_radian},x=gazepos_y,y=screen_distance,SIMPLIFY = F)
-
   #3. drop trials with less than 50% of data
   gazepos_x<-sapply(gazepos_x,function(x){if(sum(is.na(x))>0.5*median_samples_trial){x<-as.numeric(rep(NA,length(x)))}else{return(x)}})
   gazepos_y<-sapply(gazepos_y,function(x){if(sum(is.na(x))>0.5*median_samples_trial){x<-as.numeric(rep(NA,length(x)))}else{return(x)}})
+
+    #2. convert relative gaze to degrees visual angle --> degrees from point of origin
+  gazepos_x_deg<-mapply(function(x,y){x<-x*atan(screen_width/y)*degrees_by_radian},x=gazepos_x,y=screen_distance,SIMPLIFY = F)
+  gazepos_y_deg<-mapply(function(x,y){x<-x*atan(screen_height/y)*degrees_by_radian},x=gazepos_y,y=screen_distance,SIMPLIFY = F)
 
   #put together
   unsplitting_factor<-as.factor(x$trial_new)
   unsplit_by_trials<-unsplit(split_by_trial,f=unsplitting_factor)
   gazepos_x<-unsplit(gazepos_x,f=unsplitting_factor)
   gazepos_y<-unsplit(gazepos_y,f=unsplitting_factor)
+  gazepos_x_deg<-unsplit(gazepos_x_deg,f=unsplitting_factor)
+  gazepos_y_deg<-unsplit(gazepos_y_deg,f=unsplitting_factor)
 
-  x<-data.frame(unsplit_by_trials,gazepos_x,gazepos_y)
+  x<-data.frame(unsplit_by_trials,gazepos_x,gazepos_y,gazepos_x_deg,gazepos_y_deg)
   x$trial_new[x$trial_new==0]<-NA
   return(x)
 
 }
 
+data_block1<-lapply(data_block1,fun_gaze_preprocess)
+data_block2<-lapply(data_block2,fun_gaze_preprocess)
+data_block3<-lapply(data_block3,fun_gaze_preprocess)
+data_block4<-lapply(data_block4,fun_gaze_preprocess)
 
+#saccade identification based on velocity --> difficutl with noisy data
 fun_saccade_ident<-function(x){
 
   #x<-fun_gaze_preprocess(data_block1[[100]])
@@ -584,15 +591,14 @@ fun_saccade_ident<-function(x){
   x$trial_new<-ifelse(is.na(x$trial_new),0,x$trial_new) #consider NA as trial=0
   split_by_trial<-split(x,as.factor(x$trial_new))
   timestamp<-sapply(split_by_trial,function(x){x<-x['ts']})
-  gazepos_x<-sapply(split_by_trial,function(x){x<-x['gazepos_x']})
-  gazepos_y<-sapply(split_by_trial,function(x){x<-x['gazepos_y']})
-
+  gazepos_x_deg<-sapply(split_by_trial,function(x){x<-x['gazepos_x_deg']})
+  gazepos_y_deg<-sapply(split_by_trial,function(x){x<-x['gazepos_y_deg']})
 
 
 # A. VELOCITY: FILTERING, DENOISING, PEAK IDENTIFICATION
 
   #3. return velocity and acceleration variable --> in degrees per second
-  gaze_speed<-mapply(fun_return_speed,a=gazepos_x,b=gazepos_y,time=timestamp,SIMPLIFY = F)
+  gaze_speed<-mapply(fun_return_speed,a=gazepos_x_deg,b=gazepos_y_deg,time=timestamp,SIMPLIFY = F)
   gaze_accel<-mapply(fun_return_accel,x=gaze_speed,time=timestamp,SIMPLIFY = F)
 
   #4. remove biologically implausible acceleration and velocity values
@@ -673,6 +679,89 @@ fun_saccade_ident<-function(x){
   x<-data.frame(unsplit_by_trials,gaze_speed,gaze_accel,velocity_peak,velocity_continues,saccade)
   x$trial_new[x$trial_new==0]<-NA
   return(x)
+}
+
+data_block1<-lapply(data_block1,fun_saccade_ident)
+data_block2<-lapply(data_block2,fun_saccade_ident)
+data_block3<-lapply(data_block3,fun_saccade_ident)
+data_block4<-lapply(data_block4,fun_saccade_ident)
+
+#fixation identification
+
+fun_fixation_ident<-function(x,degree_fixation_cutoff=1,duration_fixation_cutoff=30){
+
+  #testing
+  # x<-data_block1[[100]]
+  # x<-fun_gaze_preprocess(x)
+  # x<-fun_saccade_ident(x)
+
+  x$trial_new<-ifelse(is.na(x$trial_new),0,x$trial_new) #consider NA as trial=0
+  split_by_trial<-split(x,as.factor(x$trial_new))
+  gazepos_x_deg<-sapply(split_by_trial,function(x){x<-x['gazepos_x_deg']})
+  gazepos_y_deg<-sapply(split_by_trial,function(x){x<-x['gazepos_y_deg']})
+
+
+  #gaze difference from sampel to sample
+      fun_gaze_diff<-function(a,b){
+
+      gaze_diff_x<-diff(a)
+      gaze_diff_y<-diff(b)
+      gaze_diff<-sqrt((gaze_diff_x^2)+(gaze_diff_y^2))
+      gaze_diff<-c(NA,gaze_diff)
+
+      }
+
+  gaze_diff<-mapply(fun_gaze_diff,a=gazepos_x_deg,b=gazepos_y_deg,SIMPLIFY=FALSE)
+
+  #identify significant movement in subsequent or preceding samples
+
+      fun_movement_ident<-function(x){
+
+      no_movement_next_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(mean(y,na.rm=T)<degree_fixation_cutoff,T,F)},align='left')
+      no_movement_last_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(mean(y,na.rm=T)<degree_fixation_cutoff,T,F)},align='right')
+      #no_movement_next_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(all(x<degree_fixation_cutoff),T,F)},align='left')
+      #no_movement_last_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(all(x<degree_fixation_cutoff),T,F)},align='right')
+      no_movement<-ifelse(no_movement_next_samples | no_movement_last_samples,T,F)
+
+      }
+
+  no_movement<-sapply(gaze_diff,fun_movement_ident)
+
+  #identify significant drifts in subsequent or preceding samples
+
+      fun_gaze_diff_abs<-function(x){
+
+        gaze_diff_abs<-diff(x)
+        gaze_diff_abs<-c(NA,gaze_diff_abs)
+
+      }
+
+  gaze_diff_abs_x<-sapply(gazepos_x_deg,fun_gaze_diff_abs)
+  gaze_diff_abs_y<-sapply(gazepos_y_deg,fun_gaze_diff_abs)
+
+      fun_drift_ident<-function(x){
+
+      no_drift_next_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(sum(y,na.rm=T)<degree_fixation_cutoff,T,F)},align='left')
+      no_drift_last_samples<-frollapply(x,n=duration_fixation_cutoff,function(y){ifelse(sum(y,na.rm=T)<degree_fixation_cutoff,T,F)},align='right')
+      no_drift<-ifelse(no_drift_next_samples | no_drift_last_samples,T,F)
+
+      }
+
+  no_drift_x<-sapply(gaze_diff_abs_x,fun_drift_ident)
+  no_drift_y<-sapply(gaze_diff_abs_y,fun_drift_ident)
+
+
+  #--> define a fixation sample if no movement or drift in the last or next 100ms ~ 30 samples
+  fixation<-mapply(function(x,y,z){ifelse(x & y & z,T,F)},x=no_movement,y=no_drift_x,z=no_drift_y)
+
+  #add to data
+  unsplitting_factor<-as.factor(x$trial_new)
+  unsplit_by_trials<-unsplit(split_by_trial,f=unsplitting_factor)
+  fixation<-unsplit(fixation,f=unsplitting_factor)
+  x<-data.frame(unsplit_by_trials,fixation)
+  x$trial_new[x$trial_new==0]<-NA
+  return(x)
+
 }
 
 
@@ -815,7 +904,7 @@ data_block4<-lapply(data_block4, func_pd_preprocess)
     x<-x[,names(x) %in% c('eventlog','timestamp','ts','trial_phase','index_trial',
                           'ts_event','block_nr','trial','gazepos.x','gazepos.y',
                           'pd','center_deviation','gazepos_x','gazepos_y','gaze_speed','gaze_accel',
-                          'velocity_peak','velocity_continues','saccade',
+                          'velocity_peak','velocity_continues','saccade','fixation',
                           'ts_event_new','trial_new')]
     return(x)
   }
@@ -894,13 +983,21 @@ data_block4<-lapply(data_block4,func_target_var)
     xend[nchar_17]<-as.numeric(substr(target_position[nchar_17],10,13))
     yend[nchar_17]<-as.numeric(substr(target_position[nchar_17],15,17))
 
-    #convert relative gaze to pixels
-    gaze_x_pix<-df$gazepos.x*1920
-    gaze_y_pix<-df$gazepos.y*1080
+    # #convert relative gaze to pixels
+    # gaze_x_pix<-df$gazepos.x*1920
+    # gaze_y_pix<-df$gazepos.y*1080
+
+    #convert relative gaze to pixels --> uses preprocessed gaze variable
+    gaze_x_pix<-df$gazepos_x*1920
+    gaze_y_pix<-df$gazepos_y*1080
+
+
+    #define offset - that allows to identify hit when they are just outside the target
+    tol_offset<-15 #15 pixels
 
     #identify hits - compare gaze position to target position
     hit<-rep(NA,nrow(df))
-    hit<-ifelse(gaze_x_pix > xstart & gaze_x_pix < xend & gaze_y_pix > ystart & gaze_y_pix < yend,T,F)
+    hit<-ifelse(gaze_x_pix > (xstart-tol_offset) & gaze_x_pix < (xend+tol_offset) & gaze_y_pix > (ystart-tol_offset) & gaze_y_pix < (yend+tol_offset),T,F)
 
     df[,'hit']<-hit
     return(df)
@@ -952,13 +1049,11 @@ data_block4<-lapply(data_block4,func_target_var)
   #TODO:
     #--> data to noisy to identify saccades per trial
 
-    #--> time to hit as time from stimulus onset to hit per trial
-
     #--> identify fixation
 
     #--> create trialwise data frame
-      #with time_to_hit data --> based on hits
-      #pupillary response
+      #- with time_to_hit data --> based on hits
+      #- with pupillary response
 
   ##--> develop analysis idea
 
@@ -968,9 +1063,10 @@ data_block4<-lapply(data_block4,func_target_var)
   require(ggplot2)
 
     #for testing: sleect subsample and do preprocessing
-    subsample<-sample(1:length(data_block1), 30, replace=F)
+    subsample<-sample(1:length(data_block1), 10, replace=F)
     test<-lapply(data_block1[subsample],fun_gaze_preprocess)
     test<-lapply(test,fun_saccade_ident)
+    test<-lapply(test,fun_fixation_ident)
     test<-lapply(test,func_pd_preprocess)
     test<-lapply(test,fun_select_data)
     test<-lapply(test,func_target_var)
@@ -1014,6 +1110,12 @@ data_block4<-lapply(data_block4,func_target_var)
   #saccade peak also shows no signal
   ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,fill=saccade))+geom_bar(position = "fill")+
     labs(x='sample (1/300s)',y='proportion of all samples')
+
+  #fixation over progression of a trial
+  ggplot(test[test$ts_event_new<1200,],aes(x=ts_event_new,fill=fixation))+geom_bar(position = "fill")+
+    labs(x='sample (1/300s)',y='proportion of all samples')
+
+
 
   table(test$saccade_peak)
 
