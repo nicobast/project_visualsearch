@@ -1,0 +1,156 @@
+---
+title: "data_analysis_visualsearch"
+author: "Nico Bast"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#check for OS --> define home path (script independent of OS)
+ifelse(Sys.info()['sysname']=='Linux',
+       home_path<-'~',
+       home_path<-'C:/Users/Nico')
+
+#project path
+project_path<-'/PowerFolders/project_visualsearch'
+
+#data path
+data_path<-'/PowerFolders/data_AFFIP/data' #preprocessed on LINUX machine
+
+#required packages
+require(ggplot2)
+require(gridExtra)
+
+```
+
+# load data
+
+```{r load data}
+
+load(df,file=paste0(home_path,project_path,"data/all_data_preprocessed_200722.Rdata"))
+
+```
+
+## create group, id, and timepoint variable
+
+```{r create group and id variables}
+
+### -- CREATE PIC; GROUP, and TIMEPOINT VARIABLE ####
+#create group variable
+df$group<-ifelse(grepl('_K',df$id),'TD','ASD')
+
+#create timepoint variable
+df$timepoint<-ifelse(grepl('_t2',df$id) | grepl('_T2',df$id),'T2',
+                  ifelse(grepl('_t4',df$id) | grepl('_T4',df$id),'T4',
+                         ifelse(grepl('_t6',df$id) | grepl('_T6',df$id),'T6','K')))
+
+#create individual id variable
+df$pic<-substr(df$id,1,3)
+
+
+```
+
+# data trimming of implausible data
+
+- exclude event data larger than 1200 (= > 4 seconds)
+
+```{r data trimming}
+
+df<-df[df$ts_event_new<1200,]
+
+
+
+
+```
+
+# data description
+
+```{r data description}
+
+#trial time
+hist(df$ts)
+hist(df$ts_event) #remove ts_events > 1200
+hist(df$ts_event_new)
+
+#initial data plausibility
+hist(df$trial_new) #new as this uses the new timestamp as reference, where trial starts with last ISI second
+hist(df$trial) #--> this is more clear - should be used in analysis
+
+#individual data sets
+length(table(df$id)) #data of 225 measurement timepoints
+length(unique(df$pic)) #data of 133 participants
+by(df$id,df$timepoint,function(x){length(unique(x))}) # K = 63, t2 = 66, t4 = 54. t6 = 42
+
+#missing data
+table(is.na(df$rpd))[2]/sum(table(is.na(df$rpd))) #--> 42.6 missing data in pupil data
+table(is.na(df$gazepos_x))[2]/sum(table(is.na(df$gazepos_x))) #--> 54.4% missing data in gaze x
+table(is.na(df$gazepos_y))[2]/sum(table(is.na(df$gazepos_y))) #--> 57.6% missing data in gaze y
+
+table(df$saccade) #roughly 10% saccade data is plausible
+table(df$fixation) #roughly 90% fixation data is plausible
+
+```
+
+#distribution of measures
+
+```{r data distribution}
+
+par(mfrow = c(3, 2))
+hist(df$pd,30,main='pupil size (mm)')
+hist(df$rpd,30,main='pupillary response') #--> implausible outlier #pupil response (baseline pd - pupil size)
+hist(df$gaze_speed,30,main='gaze velocity (degrees/s)')
+hist(df$gaze_accel,30,main='gaze acceleration (degrees/s²)')
+hist(df$gazepos_y,30,main='gaze location on x-axis (0-1)')
+hist(df$gazepos_x,30,main='gaze location on y-axis (0-1)')
+par(mfrow = c(1, 1))
+
+```
+
+#data visualization
+
+- main variables in the progression of a trial
+
+```{r data visualization}
+
+#gaze behavior
+  g1<-ggplot(df[df$trial_phase=='target',],aes(x=gazepos.x,y=gazepos.y))+
+    geom_hex(bins=30)+scale_fill_gradientn(colours=rev(rainbow(3)))+
+    ylim(1,0)+xlim(0,1)+coord_fixed(ratio = 9/16)+theme_bw()+labs(title='heatmap of gaze behavior',x='x-axis',y='y-axis')
+
+  #hits over progression of a trial
+  g2<-ggplot(df,aes(x=ts_event_new,fill=hit))+geom_bar(position = "fill")+
+    labs(title='tagret hit within trial progression',x='sample (1/300s)',y='proportion of all samples')+theme_bw()
+
+  #pupil size progression
+  g3<-ggplot(df,aes(x=ts_event_new,y=pd))+
+    geom_smooth(method='lm', formula = y ~ x + poly(x,6))+theme_bw()+labs(title='pupil size within trial',x='time (1/300s)',y='pupil size (mm)')+
+    geom_vline(xintercept=450)+geom_vline(xintercept=900)
+
+  #gaze velocity
+  g4<-ggplot(df,aes(x=ts_event_new,y=gaze_speed))+
+    geom_smooth(method='lm', formula = y ~ x + poly(x,6))+theme_bw()+labs(title='gaze velocity within trial',x='time (1/300s)',y='gaze velocity (degrees/s)')+
+    geom_vline(xintercept=450)+geom_vline(xintercept=900)
+
+  #gaze position
+  g5<-ggplot(df[!is.na(df$target_position),],aes(x=ts_event_new,y=gazepos_x,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth(method='lm', formula = y ~ x + poly(x,5))+theme_bw()+labs(title='eye movement: x-axis',x='time (samples)',y='screen space (0-1)')
+
+  g6<-ggplot(df[!is.na(df$target_position),],aes(x=ts_event_new,y=gazepos_y,group=as.factor(target_position),color=as.factor(target_position)))+
+    geom_smooth(method='lm', formula = y ~ x + poly(x,5))+theme_bw()+labs(title='eye movement: y-axis',x='time (samples)',y='screen space (0-1)')
+
+
+  #create figure scene duration
+  tiff(file=paste0(home_path,project_path,"/output/figure_preprocessed_data.tiff"), # create a file in tiff format in current working directory
+       width=12, height=15, units="in", res=300, compression='lzw') #define size and resolution of the resulting figure
+
+  grid.arrange(g1,g2,g3,g4,g5,g6,ncol=2,top='preprocessed data')
+
+  dev.off()
+
+
+```
+
+
+

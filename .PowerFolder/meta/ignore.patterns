@@ -1,0 +1,19 @@
+*.crdownload
+.git/objects/d8/f7e686b5e2b3d39d87a15f90bbafbe3cbf784b
+*desktop.ini
+*.ithmb
+*.temporary items
+*~$*
+.git/objects/49/7a123d5915813a038cd30fddbff6caa865476b
+.git/objects/98/9ae446bad9f79f6569febedf4d2a9c93d4c6cf
+*.partial
+*~*.tmp
+.git/objects/91/b60f426a77eaee67a13ff447e0218142be3b23
+*.~lock.*
+*.ds_store
+*thumbs.db
+*.trashes
+.git/objects/e6/4186df0b27d402eb5b101fe42f4891520ec803
+*.fseventd
+*.apdisk
+*.part
