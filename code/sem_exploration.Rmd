@@ -1,0 +1,945 @@
+---
+title: "Exploration SEM"
+author: "Naisan Raji"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setenv(LANG = "en")
+```
+
+### Load libraries
+
+```{r libraries, warning=FALSE, message=FALSE}
+require(tidyr) # pivot_wider()
+require(dplyr) # select()
+require(MatchIt)
+require(lavaan)
+# require(semPlot)
+require(tidySEM) # plotting lavaan models
+```
+
+### Load data
+
+```{r data}
+# load("data/df") # takes super long to load, enable only when needed
+load("data/df_trial") # trial-aggregated data
+# df_trial <- df_trial[!is.na(df_trial$id),] # remove those rows
+load("data/df_agg") # participant-aggregated data
+load("data/demo_df.Rdata") # demographic data
+```
+
+
+
+
+# Preparation + Exploration
+Merge datasets with demographic data:
+
+```{r ar data}
+# merge trial-aggregated data and demographic data
+df_trial <- merge(df_trial, demo_df,
+               by.x = c('pic', 'group', 'timepoint'),
+               by.y = c('ID_Studie', 'group', 'timepoint'),
+               all.x = T) # df_trial is main data frame
+df_trial <- df_trial[!grepl('^9', df_trial$pic),] # keep only ASD data (remove IDs starting with 9)
+
+
+df_agg <- merge(df_agg, demo_df,
+               by.x = c('pic', 'group', 'timepoint'),
+               by.y = c('ID_Studie', 'group', 'timepoint'),
+               all.x = T) 
+df_agg <- df_agg[!grepl('^9', df_agg$pic),]
+```
+
+
+Exclude trials 33 to 64.
+```{r trials33-64}
+df_trial <- df_trial[df_trial$trial %in% levels(df_trial$trial)[1:32], ]
+```
+
+
+Create `hit` variable
+```{r hit prep}
+# trial-level dataset
+df_trial$hit <- !df_trial$missed_target # recode missed_target to hit by reversing all values
+
+df_trial <- df_trial %>% # create variable with proportion of hits in relation to valid trials
+  group_by(pic, timepoint) %>%
+  mutate(hit_prop = mean(hit, na.rm = TRUE)) %>%
+  ungroup()
+
+# aggregated dataset:
+df_agg$hit <- !df_agg$missed_target # recode missed_target to hit by reversing all values
+```
+
+Exclude trials with missing `time_to_target` and `time_to_target` shorter than 0.1 seconds.
+```{r}
+df_trial <- df_trial %>% na.omit(time_to_target) %>% filter(time_to_target >= 0.01)
+df_agg <- df_agg %>% na.omit(time_to_target) %>% filter(time_to_target >= 0.01)
+```
+
+
+## Wide data: df_agg
+Create wide data set for lavaan (aggregated data, conversion of trial-data is below):
+```{r agg_wide}
+# agg_wide <- df_agg %>% filter(group == "ASD") %>%
+#   select(pic, timepoint, time_to_target, srs_total) %>%
+#   pivot_wider(names_from = timepoint, 
+#               names_glue = "{timepoint}_{.value}", 
+#               values_from = c(time_to_target, srs_total))
+
+agg_wide <- df_agg %>%
+  select(pic, timepoint, time_to_target, hit_duration, hit, srs_total, rbsr:rbsr_cb) %>%
+  pivot_wider(names_from = timepoint, 
+              names_glue = "{timepoint}_{.value}", 
+              values_from = c(time_to_target, hit_duration, hit, srs_total, rbsr:rbsr_cb))
+```
+
+## Wide data: df_trial
+
+Trial-level data (time_to_target):
+```{r ttt wide format}
+timetotarget <- df_trial %>% select(pic, trial, timepoint, time_to_target, srs_total, rbsr:rbsr_cb)
+timetotarget_t2 <- timetotarget %>% filter(timepoint == "T2") %>% select(-timepoint)
+timetotarget_t4 <- timetotarget %>% filter(timepoint == "T4") %>% select(-timepoint)
+timetotarget_t6 <- timetotarget %>% filter(timepoint == "T6") %>% select(-timepoint)
+timetotarget_fu <- timetotarget %>% filter(timepoint == "FU") %>% select(-timepoint)
+timetotarget_t2 <- timetotarget_t2 %>% rename_with(~ paste0("t2_", .), -c(pic, trial))
+timetotarget_t4 <- timetotarget_t4 %>% rename_with(~ paste0("t4_", .), -c(pic, trial))
+timetotarget_t6 <- timetotarget_t6 %>% rename_with(~ paste0("t6_", .), -c(pic, trial))
+timetotarget_fu <- timetotarget_fu %>% rename_with(~ paste0("fu_", .), -c(pic, trial))
+
+timetotarget <- merge(timetotarget_t2, timetotarget_t4, all = T)
+timetotarget <- merge(timetotarget, timetotarget_t6, all = TRUE)
+timetotarget <- merge(timetotarget, timetotarget_fu, all = TRUE)
+rm(timetotarget_t2, timetotarget_t4, timetotarget_t6, timetotarget_fu) # remove from environment
+```
+
+Trial-level data (hit_duration):
+```{r hit_dur wide format}
+hit_dur <- df_trial %>% select(pic, trial, timepoint, hit_duration, srs_total, rbsr:rbsr_cb)
+hit_dur_t2 <- hit_dur %>% filter(timepoint == "T2") %>% select(-timepoint)
+hit_dur_t4 <- hit_dur %>% filter(timepoint == "T4") %>% select(-timepoint)
+hit_dur_t6 <- hit_dur %>% filter(timepoint == "T6") %>% select(-timepoint)
+hit_dur_fu <- hit_dur %>% filter(timepoint == "FU") %>% select(-timepoint)
+hit_dur_t2 <- hit_dur_t2 %>% rename_with(~ paste0("t2_", .), -c(pic, trial))
+hit_dur_t4 <- hit_dur_t4 %>% rename_with(~ paste0("t4_", .), -c(pic, trial))
+hit_dur_t6 <- hit_dur_t6 %>% rename_with(~ paste0("t6_", .), -c(pic, trial))
+hit_dur_fu <- hit_dur_fu %>% rename_with(~ paste0("fu_", .), -c(pic, trial))
+
+hit_dur <- merge(hit_dur_t2, hit_dur_t4, all = T)
+hit_dur <- merge(hit_dur, hit_dur_t6, all = TRUE)
+hit_dur <- merge(hit_dur, hit_dur_fu, all = TRUE)
+rm(hit_dur_t2, hit_dur_t4, hit_dur_t6, hit_dur_fu) # remove from environment
+```
+
+## Exploration time_to_target
+
+From previous explorations, we know that the correlations between time_to_target (earlier timepoints with subsequent timepoints) are significant in the trial-wise data but not in the aggregated data. For exploration why that is, we explore the distributions:
+
+```{r expl}
+# T2
+range(agg_wide$T2_time_to_target, na.rm = T)
+range(timetotarget$t2_time_to_target, na.rm = T)
+hist(agg_wide$T2_time_to_target)
+hist(timetotarget$t2_time_to_target)
+
+# T4
+range(agg_wide$T4_time_to_target, na.rm = T)
+range(timetotarget$t4_time_to_target, na.rm = T)
+hist(agg_wide$T4_time_to_target)
+hist(timetotarget$t4_time_to_target)
+
+# T6
+range(agg_wide$T6_time_to_target, na.rm = T)
+range(timetotarget$t6_time_to_target, na.rm = T)
+hist(agg_wide$T6_time_to_target)
+hist(timetotarget$t6_time_to_target)
+
+# FU2
+range(agg_wide$FU_time_to_target, na.rm = T)
+range(timetotarget$fu_time_to_target, na.rm = T)
+hist(agg_wide$FU_time_to_target)
+hist(timetotarget$fu_time_to_target)
+
+# long data
+range(df_trial$time_to_target, na.rm = T)
+range(df_agg$time_to_target, na.rm = T)
+hist(df_trial$time_to_target)
+hist(df_agg$time_to_target)
+
+# create a density plot for comparison of df_agg$time_to_target and df_trial$time_to_target
+require(ggplot2)
+# sreate df for plotting
+df_plot <- data.frame(time_to_target = c(df_trial$time_to_target, df_agg$time_to_target),
+                      df = rep(c("df_trial", "df_agg"), c(length(df_trial$time_to_target), length(df_agg$time_to_target)))
+)
+
+# Plot density plots
+ggplot(df_plot, aes(x = time_to_target, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: time_to_target per df",
+       x = "time_to_target",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+
+# T2
+df_plot <- data.frame(time_to_target = c(timetotarget$t2_time_to_target, agg_wide$T2_time_to_target),
+                      df = rep(c("timetotarget", "agg_wide"), 
+                               c(length(timetotarget$t2_time_to_target), 
+                                 length(agg_wide$T2_time_to_target))))
+
+ggplot(df_plot, aes(x = time_to_target, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: time_to_target (T2)",
+       x = "time_to_target",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+
+# T4
+df_plot <- data.frame(time_to_target = c(timetotarget$t4_time_to_target, agg_wide$T4_time_to_target),
+                      df = rep(c("timetotarget", "agg_wide"), 
+                               c(length(timetotarget$t4_time_to_target), 
+                                 length(agg_wide$T4_time_to_target))))
+
+ggplot(df_plot, aes(x = time_to_target, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: time_to_target (T4)",
+       x = "time_to_target",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+
+# T6
+df_plot <- data.frame(time_to_target = c(timetotarget$t6_time_to_target, agg_wide$T6_time_to_target),
+                      df = rep(c("timetotarget", "agg_wide"), 
+                               c(length(timetotarget$t6_time_to_target), 
+                                 length(agg_wide$T6_time_to_target))))
+
+ggplot(df_plot, aes(x = time_to_target, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: time_to_target (T6)",
+       x = "time_to_target",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+
+# FU2
+df_plot <- data.frame(time_to_target = c(timetotarget$fu_time_to_target, agg_wide$FU_time_to_target),
+                      df = rep(c("timetotarget", "agg_wide"), 
+                               c(length(timetotarget$fu_time_to_target), 
+                                 length(agg_wide$FU_time_to_target))))
+
+ggplot(df_plot, aes(x = time_to_target, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: time_to_target (FU2)",
+       x = "time_to_target",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+```
+
+Questionable: Why are the ranges of time_to_target in the aggregated datasets wider than in the trial-wise datasets? Shouldn't that be the opposite?
+
+## Exploration hit_duration
+```{r expl hit_dur}
+# long data
+range(df_trial$hit_duration, na.rm = T)
+range(df_agg$hit_duration, na.rm = T)
+hist(df_trial$hit_duration)
+hist(df_agg$hit_duration)
+
+# create df for plotting
+df_plot <- data.frame(hit_duration = c(df_trial$hit_duration, df_agg$hit_duration),
+                      df = rep(c("df_trial", "df_agg"), c(length(df_trial$hit_duration), length(df_agg$hit_duration)))
+)
+
+# Plot density plots
+ggplot(df_plot, aes(x = hit_duration, fill = df)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density plot: hit_duration per df",
+       x = "hit_duration",
+       y = "Density") +
+  theme_minimal() +
+  scale_fill_manual(values = c("blue", "green"))
+
+```
+
+The structure is about the same for the single timepoints (not shown here). Why is the variance much broader in the aggregated data?
+
+# Path models
+
+# No FU2
+
+## SRS-16
+
+### Time to target (trial data)
+
+```{r ttt srs sem model}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_time_to_target
+            t6_srs_total ~ ARa32 * t4_srs_total + CLb32 * t4_time_to_target + CL31 * t2_time_to_target
+          
+            t4_time_to_target ~ ARb21 * t2_time_to_target
+            
+            
+          # Covariances
+          t2_srs_total ~~ t2_time_to_target
+          
+          # Constrain FU covariances to zero
+          '
+
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml") # default is listwise deletion which will result in no data, since there is no row without any NA!
+
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### Time to target (aggregated data)
+
+```{r ttt srs agg, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_time_to_target
+            T6_srs_total ~ ARa32 * T4_srs_total + CLb32 * T4_time_to_target + CL31 * T2_time_to_target
+            
+            T4_time_to_target ~ ARb21 * T2_time_to_target
+            
+            
+          # Covariances
+          T2_srs_total ~~ T2_time_to_target
+          '
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000) # use wide format of aggregated visual search data
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+In both, the trial and aggregated data the model fit statistics are not interpretable (CFI/TLI higher than 1, RMSEA and SRMR very close to 0), but a main difference is the significant autoregression of time_to_target (T2) on time_to_target (T4) in the trial-data that we don't find in the aggregated data.
+
+Prof. Freitag suggested scaling in different variations (Meeting 22.10.2024).
+
+### Time to target (standardised agg data)
+
+Aggregated data after scaling time_to_target (per timepoint):
+
+```{r ttt srs agg scaled, fig.width=10, fig.height=8}
+agg_wide_s <- agg_wide
+agg_wide_s$T2_time_to_target <- scale(agg_wide_s$T2_time_to_target)
+agg_wide_s$T4_time_to_target <- scale(agg_wide_s$T4_time_to_target)
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_time_to_target
+            T6_srs_total ~ ARa32 * T4_srs_total + CLb32 * T4_time_to_target + CL31 * T2_time_to_target
+            
+            T4_time_to_target ~ ARb21 * T2_time_to_target
+            
+            
+          # Covariances
+          T2_srs_total ~~ T2_time_to_target
+          '
+
+model_fit <- sem(model = model, data = agg_wide_s, missing = "fiml", em.h1.iter.max=1000) # use wide format of aggregated visual search data
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+Aggregated data after scaling time_to_target over all timepoints:
+
+```{r ttt srs agg scaled2, fig.width=10, fig.height=8}
+df_agg_s <- df_agg
+df_agg_s$time_to_target <- scale(df_agg_s$time_to_target) # scale
+
+# re-create agg_wide with scaled time_to_target
+agg_wide_s <- df_agg_s %>%
+  select(pic, timepoint, time_to_target, hit_duration, hit, srs_total, rbsr:rbsr_cb) %>%
+  pivot_wider(names_from = timepoint, 
+              names_glue = "{timepoint}_{.value}", 
+              values_from = c(time_to_target, hit_duration, hit, srs_total, rbsr:rbsr_cb))
+
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_time_to_target
+            T6_srs_total ~ ARa32 * T4_srs_total + CLb32 * T4_time_to_target + CL31 * T2_time_to_target
+            
+            T4_time_to_target ~ ARb21 * T2_time_to_target
+            
+            
+          # Covariances
+          T2_srs_total ~~ T2_time_to_target
+          '
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000) # use wide format of aggregated visual search data
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Scaling does not make a difference in the non-significant autoregression between time_to_target T2 and T4.
+
+### Hit duration (trial data)
+```{r target fixation trial srs}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_hit_duration
+            t6_srs_total ~ ARa32 * t4_srs_total + CLb32 * t4_hit_duration + CL31 * t2_hit_duration
+            t4_hit_duration ~ ARb21 * t2_hit_duration
+            
+          # Covariances
+          t2_srs_total ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml")
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Model fit statistics not interpretable.
+
+
+### Hit duration (aggregated data)
+```{r target fixation agg srs}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_hit_duration
+            T6_srs_total ~ ARa32 * T4_srs_total + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_srs_total ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+
+```
+Model fit statistics could be better, but they are interpretable and we observe a significant negative effect of `T2_hit_duration` on `T4_srs_total`.
+
+## RBS-R total
+
+### Time to target (trial data)
+```{r ttt trial rbs total, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_time_to_target
+            t6_rbsr ~ ARa32 * t4_rbsr + CLb32 * t4_time_to_target + CLb31 * t2_time_to_target
+          
+            t4_time_to_target ~ ARb21 * t2_time_to_target
+            
+          # Covariances
+          t2_rbsr ~~ t2_time_to_target'
+
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # okay, plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+Model fit statistics indicate questionable fit but are at least interpretable (e.g. CFI/TLI smaller than 1)
+
+### Time to target (aggregated data)
+```{r ttt rbs total, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_time_to_target
+            T6_rbsr ~ ARa32 * T4_rbsr + CLb32 * T4_time_to_target + CLb31 * T2_time_to_target
+            T4_time_to_target ~ ARb21 * T2_time_to_target
+            
+          # Covariances
+          T2_rbsr ~~ T2_time_to_target'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+varTable(model_fit) # okay, plausible
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Model fit statistics not interpretable.
+
+
+### Hit duration (trial data)
+```{r target fixation trial rbs}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_hit_duration
+            t6_rbsr ~ ARa32 * t4_rbsr + CLb32 * t4_hit_duration + CL31 * t2_hit_duration
+            t4_hit_duration ~ ARb21 * t2_hit_duration
+            
+          # Covariances
+          t2_rbsr ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Fit measures interpretable, could be better, but significant effect of `T2_hit_duration` on `T6_rbsr`.
+
+### Hit duration (aggregated data)
+
+```{r target fixation agg rbs}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_hit_duration
+            T6_rbsr ~ ARa32 * T4_rbsr + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Fit statistics not interpretable.
+
+### RBS-R IS Hit duration
+Aggregated data:
+```{r target fixation agg rbs is}
+model <- '# Regression paths
+            T4_rbsr_is ~ ARa21 * T2_rbsr_is + CLb21 * T2_hit_duration
+            T6_rbsr_is ~ ARa32 * T4_rbsr_is + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr_is ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000)
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=2000)
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr_is", "T4_rbsr_is", "T6_rbsr_is", "FU_rbsr_is",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### RBS-R RSM Hit duration
+Aggregated data:
+```{r target fixation agg rbs rsm}
+model <- '# Regression paths
+            T4_rbsr_rsm ~ ARa21 * T2_rbsr_rsm + CLb21 * T2_hit_duration
+            T6_rbsr_rsm ~ ARa32 * T4_rbsr_rsm + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr_rsm ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000)
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=2000)
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr_rsm", "T4_rbsr_rsm", "T6_rbsr_rsm", "FU_rbsr_rsm",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### RBS-R SI Hit duration
+Aggregated data:
+```{r target fixation agg rbs si}
+model <- '# Regression paths
+            T4_rbsr_si ~ ARa21 * T2_rbsr_si + CLb21 * T2_hit_duration
+            T6_rbsr_si ~ ARa32 * T4_rbsr_si + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr_si ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000)
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=2000)
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr_si", "T4_rbsr_si", "T6_rbsr_si", "FU_rbsr_si",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### RBS-R CB Hit duration
+Aggregated data:
+```{r target fixation agg rbs cb}
+model <- '# Regression paths
+            T4_rbsr_cb ~ ARa21 * T2_rbsr_cb + CLb21 * T2_hit_duration
+            T6_rbsr_cb ~ ARa32 * T4_rbsr_cb + CLb32 * T4_hit_duration + CL31 * T2_hit_duration
+            T4_hit_duration ~ ARb21 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr_cb ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000)
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=2000)
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr_cb", "T4_rbsr_cb", "T6_rbsr_cb", "FU_rbsr_cb",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+# No VS autoregression
+
+## SRS-16
+
+### Time to target (trial data)
+
+```{r ttt srs sem model no AR}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_time_to_target
+            t6_srs_total ~ ARa32 * t4_srs_total + CL32 * t4_time_to_target + CL31 * t2_time_to_target
+            
+            
+          # Covariances
+          t2_srs_total ~~ t2_time_to_target
+          '
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml", em.h1.iter.max=1000) # default is listwise deletion which will result in no data, since there is no row without any NA!
+
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Acceptable model fit statistics (mit Auge zudrücken...)
+
+### Time to target (aggregated data)
+
+```{r ttt srs agg no AR, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_time_to_target
+            T6_srs_total ~ ARa32 * T4_srs_total + CL32 * T4_time_to_target + CL31 * T2_time_to_target
+            
+          # Covariances
+          T2_srs_total ~~ T2_time_to_target
+          '
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000) # use wide format of aggregated visual search data
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Model fit statistics not interpretable
+
+
+### Hit duration (trial data)
+```{r target fixation trial srs no AR}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_hit_duration
+            t6_srs_total ~ ARa32 * t4_srs_total + CL32 * t4_hit_duration + CL31 * t2_hit_duration
+            
+          # Covariances
+          t2_srs_total ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml", em.h1.iter.max= 1000)
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Fit statistics not interpretable
+
+### Hit duration (aggregated data)
+```{r target fixation agg srs no AR}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_hit_duration
+            T6_srs_total ~ ARa32 * T4_srs_total + CL32 * T4_hit_duration + CL31 * T2_hit_duration
+            
+          # Covariances
+          T2_srs_total ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+
+## RBS-R total
+
+### Time to target (trial data)
+```{r ttt trial rbs total no AR, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_time_to_target
+            t6_rbsr ~ ARa32 * t4_rbsr + CL32 * t4_time_to_target + CLb31 * t2_time_to_target
+            
+          # Covariances
+          t2_rbsr ~~ t2_time_to_target'
+
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # okay, plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### Time to target (aggregated data)
+```{r ttt rbs total no AR, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_time_to_target
+            T6_rbsr ~ ARa32 * T4_rbsr + CL32 * T4_time_to_target + CLb31 * T2_time_to_target
+            
+          # Covariances
+          T2_rbsr ~~ T2_time_to_target'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+varTable(model_fit) # okay, plausible
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+### Hit duration (trial data)
+```{r target fixation trial rbs no AR}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_hit_duration
+            t6_rbsr ~ ARa32 * t4_rbsr + CL32 * t4_hit_duration + CL31 * t2_hit_duration
+            
+          # Covariances
+          t2_rbsr ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+robust fit statistics indicate poor model fit (but are at least interpretable)
+
+### Hit duration (aggregated data)
+
+```{r target fixation agg rbs no AR}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_hit_duration
+            T6_rbsr ~ ARa32 * T4_rbsr + CL32 * T4_hit_duration + CL31 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+fit statistics indicate very good model fit.
+
+# Only T2 as predictor
+
+## SRS-16
+
+### Time to target (trial data)
+
+```{r ttt srs sem model no t4}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_time_to_target
+            t6_srs_total ~ ARa32 * t4_srs_total + CL31 * t2_time_to_target
+            
+            
+          # Covariances
+          t2_srs_total ~~ t2_time_to_target
+          '
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml") # default is listwise deletion which will result in no data, since there is no row without any NA!
+
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### Time to target (aggregated data)
+
+```{r ttt srs agg no t4, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_time_to_target
+            T6_srs_total ~ ARa32 * T4_srs_total + CL31 * T2_time_to_target
+            
+          # Covariances
+          T2_srs_total ~~ T2_time_to_target
+          '
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml", em.h1.iter.max=1000) # use wide format of aggregated visual search data
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+Guter model fit!!! Sogar in den robusten fit statistics!
+
+
+### Hit duration (trial data)
+```{r target fixation trial srs no t4}
+model <- '# Regression paths
+            t4_srs_total ~ ARa21 * t2_srs_total + CLb21 * t2_hit_duration
+            t6_srs_total ~ ARa32 * t4_srs_total + CL31 * t2_hit_duration
+            
+          # Covariances
+          t2_srs_total ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml")
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_srs_total", "t4_srs_total", "t6_srs_total", "fu_srs_total",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+### Hit duration (aggregated data)
+```{r target fixation agg srs no t4}
+model <- '# Regression paths
+            T4_srs_total ~ ARa21 * T2_srs_total + CLb21 * T2_hit_duration
+            T6_srs_total ~ ARa32 * T4_srs_total + CL31 * T2_hit_duration
+            
+          # Covariances
+          T2_srs_total ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_srs_total", "T4_srs_total", "T6_srs_total", "FU_srs_total",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+
+## RBS-R total
+
+### Time to target (trial data)
+```{r ttt trial rbs total no t4, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_time_to_target
+            t6_rbsr ~ ARa32 * t4_rbsr + CLb31 * t2_time_to_target
+            
+          # Covariances
+          t2_rbsr ~~ t2_time_to_target'
+
+model_fit <- sem(model = model, data = timetotarget, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # okay, plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_time_to_target", "t4_time_to_target", "t6_time_to_target", "fu_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### Time to target (aggregated data)
+```{r ttt rbs total no t4, fig.width=10, fig.height=8}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_time_to_target
+            T6_rbsr ~ ARa32 * T4_rbsr + CLb31 * T2_time_to_target
+            
+          # Covariances
+          T2_rbsr ~~ T2_time_to_target'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+varTable(model_fit) # okay, plausible
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_time_to_target", "T4_time_to_target", "T6_time_to_target", "FU_time_to_target", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+
+### Hit duration (trial data)
+```{r target fixation trial rbs no t4}
+model <- '# Regression paths
+            t4_rbsr ~ ARa21 * t2_rbsr + CLb21 * t2_hit_duration
+            t6_rbsr ~ ARa32 * t4_rbsr + CL31 * t2_hit_duration
+            
+          # Covariances
+          t2_rbsr ~~ t2_hit_duration'
+
+model_fit <- sem(model = model, data = hit_dur, missing = "fiml", em.h1.iter.max=2000)
+varTable(model_fit) # plausible
+lavInspect(model_fit, "coverage")
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("t2_rbsr", "t4_rbsr", "t6_rbsr", "fu_rbsr",
+                          "t2_hit_duration", "t4_hit_duration", "t6_hit_duration", "fu_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+### Hit duration (aggregated data)
+
+```{r target fixation agg rbs no t4}
+model <- '# Regression paths
+            T4_rbsr ~ ARa21 * T2_rbsr + CLb21 * T2_hit_duration
+            T6_rbsr ~ ARa32 * T4_rbsr + CL31 * T2_hit_duration
+            
+          # Covariances
+          T2_rbsr ~~ T2_hit_duration'
+
+model_fit <- sem(model = model, data = agg_wide, missing = "fiml")
+
+summary(model_fit, fit.measures = T)
+
+model_graph <- get_layout("T2_rbsr", "T4_rbsr", "T6_rbsr", "FU_rbsr",
+                          "T2_hit_duration", "T4_hit_duration", "T6_hit_duration", "FU_hit_duration", rows = 2)
+graph_sem(model = model_fit, layout = model_graph)
+```
+
+

@@ -12,7 +12,7 @@
 
 # SETUP (load data anad packages) ####
 
-#load("C:/Users/Nico/PowerFolders/project_visualsearch/data/all_data_preprocessed_160524.Rdata")
+load("C:/Users/Nico/PowerFolders/project_visualsearch/data/all_data_preprocessed_160524.Rdata")
 
 # define required packages
 require(ggplot2)

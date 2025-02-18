@@ -164,14 +164,14 @@ rm(df.list.data, df.list.events, df.list.time)
 #save(df,file="C:/Users/nico/Desktop/BOSCA_joint_attention_all_data_merged_170423.Rdata")
 #save(df,file="C:/Users/nico/Desktop/BOSCA_all_data_merged_130324.Rdata")
 #save(df,file="C:/Users/nico/Desktop/BOSCA_all_data_merged_150524.Rdata")
-save(df,file="C:/Users/nico/Desktop/BOSCA_all_data_merged_280824.Rdata")
+#save(df,file="C:/Users/nico/Desktop/BOSCA_all_data_merged_280824.Rdata")
 
 #--> now found on NAS
 
 end_time <- Sys.time()
 end_time - start_time
 
-# --> ##load("F:\temp_data_AFFIP\all_data_merged_040722.Rdata")
+# --> ##load("F:\temp_data_AFFIP\BOSCA_all_data_merged_280824.Rdata")
 #-----------PREPROCESSING----------------------------------------------------------------####
 ## -- SELECT TASK SPECIFIC DATA ####
 
@@ -754,9 +754,6 @@ data_block4<-pblapply(data_block4,fun_gaze_preprocess)
 #saccade identification based on velocity --> difficult with noisy data
 fun_saccade_ident<-function(x){
 
-  #x<-fun_gaze_preprocess(data_block1[[100]])
-
-
   #preprocess based on per trial level
   x$trial_new<-ifelse(is.na(x$trial_new),0,x$trial_new) #consider NA as trial=0
   split_by_trial<-split(x,as.factor(x$trial_new))
@@ -853,8 +850,10 @@ fun_saccade_ident<-function(x){
 
 
 #remove failing dataset
+data_block1<-data_block1[names(data_block1)!='062_fu2']
+data_block2<-data_block2[names(data_block2)!='062_fu2']
 data_block3<-data_block3[names(data_block3)!='062_fu2']
-
+data_block4<-data_block4[names(data_block4)!='062_fu2']
 
 data_block1<-pblapply(data_block1,fun_saccade_ident)
 data_block2<-pblapply(data_block2,fun_saccade_ident)
@@ -1291,10 +1290,10 @@ df<-df[!grepl('fu4',df$id),]
 
 ## trimming of implausible data ####
 
-#exclude trial timestamp larger than 1200
+#exclude trial timestamp larger than 1050
 hist(df$ts)
-df<-df[df$ts_event_new<1200,]
-hist(df$ts_event) #remove ts_events > 1200
+df<-df[df$ts_event_new<1050,]
+hist(df$ts_event) #remove ts_events > 1050
 hist(df$ts_event_new)
 
 
@@ -1336,7 +1335,8 @@ split_by_trial<-split(df_agg,df_agg$id)
 #hist(sapply(split_by_trial,nrow)) #only 4000 trials with data
 
 #time to target
-time_to_target<-pbsapply(split_by_trial,function(x,stimulus_onset=450,frequency=300){
+#time_to_target<-pbsapply(split_by_trial,function(x,stimulus_onset=450,frequency=300){
+time_to_target<-pbsapply(split_by_trial,function(x,stimulus_onset=600,frequency=300){
 
   relevant_data<-x$ts_event_new[x$hit & x$fixation & x$ts_event_new>stimulus_onset]
 
@@ -1395,7 +1395,7 @@ df_trial<-df
 split_by_trial<-split(df_trial,interaction(df_trial$id,df_trial$trial))
 
 #time to target
-time_to_target<-pbsapply(split_by_trial,function(x,stimulus_onset=450,frequency=300){
+time_to_target<-pbsapply(split_by_trial,function(x,stimulus_onset=600,frequency=300){
 
   relevant_data<-x$ts_event_new[x$hit & x$fixation & x$ts_event_new>stimulus_onset]
 
@@ -1411,8 +1411,8 @@ table(is.na(time_to_target))
 #pupillary response
 pupillary_response<-pbsapply(split_by_trial,function(x){
 
-  before_stimulus_onset<-mean(x$pd[x$ts_event_new>300 & x$ts_event_new<450],na.rm=T)
-  one_second_after_stimulus_onset<-mean(x$pd[x$ts_event_new>675 & x$ts_event_new<825],na.rm=T)
+  before_stimulus_onset<-mean(x$pd[x$ts_event_new>450 & x$ts_event_new<600],na.rm=T)
+  one_second_after_stimulus_onset<-mean(x$pd[x$ts_event_new>825 & x$ts_event_new<975],na.rm=T)
   one_second_after_stimulus_onset-before_stimulus_onset
 
 
@@ -1449,5 +1449,10 @@ df_trial<-data.frame(id,pic,group,timepoint,block_nr,trial,target,target_positio
 
 # ---> SAVE PREPROCESSED DATA ####
 
-save(df,df_trial,df_agg,file=paste0(home_path,project_path,"/data/all_data_preprocessed_160524.Rdata"))
+#save(df,df_trial,df_agg,file=paste0(home_path,project_path,"/data/all_data_preprocessed_160524.Rdata"))
+save(df,df_trial,df_agg,file=paste0(home_path,project_path,"/data/all_data_preprocessed_280824.Rdata"))
+
+test<-df[grepl('target',df$eventlog),]
+
+ggplot(df,aes(ts_event_new,fill=trial_phase))+geom_histogram()+theme_bw()
 
